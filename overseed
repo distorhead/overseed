@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+
+import subprocess
+
+CONFIG = {
+  'events': ['modify', 'move', 'create', 'delete'],
+  'exclude': ['\.git', '.*\.swp', '.*\.swx'],
+  'on_event': [
+    "/usr/bin/ctags-exuberant -R",
+    "/usr/bin/mkid"
+  ]
+}
+
+
+def call_cmd(cmd):
+  print("call_cmd -> {}".format(cmd))
+  return subprocess.call(cmd, shell=True)
+
+
+def inotify_waiter(cfg):
+  cmd = "inotifywait -r ."
+
+  events = cfg['events']
+  if events:
+    cmd += " -e {}".format(",".join(events))
+
+  exclude = cfg['exclude']
+  if exclude:
+    cmd += " --exclude='({})'".format("|".join(exclude))
+
+  return call_cmd(cmd)
+
+
+def event_handler(cfg):
+  for cmd in cfg['on_event']:
+    call_cmd(cmd)
+
+
+def main():
+  while True:
+    res = inotify_waiter(CONFIG)
+    if res == 0:
+      event_handler(CONFIG)
+
+
+if __name__ == '__main__':
+  main()
