@@ -6,8 +6,7 @@ CONFIG = {
   'events': ['modify', 'move', 'create', 'delete'],
   'exclude': ['\.git', '.*\.swp', '.*\.swx'],
   'on_event': [
-    "/usr/bin/ctags-exuberant -R",
-    "/usr/bin/mkid"
+    "/usr/bin/ctags-exuberant -R"
   ]
 }
 
@@ -37,6 +36,7 @@ def event_handler(cfg):
 
 
 def main():
+  event_handler(CONFIG)
   while True:
     res = inotify_waiter(CONFIG)
     if res == 0:
