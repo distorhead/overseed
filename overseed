@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 
 import subprocess
+import argparse
+import hashlib
+import daemonize
+import os
+import sys
+
 
 CONFIG = {
   'events': ['modify', 'move', 'create', 'delete'],
@@ -12,7 +18,6 @@ CONFIG = {
 
 
 def call_cmd(cmd):
-  print("call_cmd -> {}".format(cmd))
   return subprocess.call(cmd, shell=True)
 
 
@@ -35,12 +40,67 @@ def event_handler(cfg):
     call_cmd(cmd)
 
 
-def main():
+def watcher_loop(target):
+  os.chdir(target)
   event_handler(CONFIG)
   while True:
     res = inotify_waiter(CONFIG)
     if res == 0:
       event_handler(CONFIG)
+
+
+def make_pidpath(target):
+  cwd = target.encode('utf-8')
+  pid = "/run/overseed/{}.pid".format(hashlib.md5(cwd).hexdigest())
+  return pid
+
+
+def get_pid(pidpath):
+  try:
+    f = open(pidpath, 'r')
+    pidstr = f.read()
+  except Exception as e:
+    print("Unable to read daemon pid from '{pidpath}'".format(pidpath=pidpath), file=sys.stderr)
+    sys.exit(1)
+
+  try:
+    return int(pidstr)
+  except Exception as e:
+    print("Bad pid '{pidstr}'".format(pidstr=pidstr))
+    sys.exit(1)
+
+
+def kill(pid):
+  call_cmd("kill {pid}".format(pid=pid))
+
+
+def main():
+  parser = argparse.ArgumentParser(description="Super watcher")
+  parser.add_argument('-d', '--daemonize', action='store_true', default=False,
+                      help="daemonize watcher")
+  parser.add_argument('-s', '--stop', action='store_true', default=False,
+                      help="stop currently running watcher")
+  parser.add_argument('-w', '--watch', type=str, default=os.getcwd(),
+                      help="directory to watch")
+  args = parser.parse_args()
+
+  args.watch = os.path.abspath(args.watch)
+
+  if args.stop:
+    pp = make_pidpath(args.watch)
+    pid = get_pid(pp)
+    print("kill {pid}".format(pid=pid))
+    kill(pid)
+    os.unlink(pp)
+
+  elif args.daemonize:
+    pid = make_pidpath(args.watch)
+    print("pid: {pid}".format(pid=pid))
+    daemon = daemonize.Daemonize(app="overseed", pid=pid, action=lambda: watcher_loop(args.watch))
+    daemon.start()
+
+  else:
+    watcher_loop(args.watch)
 
 
 if __name__ == '__main__':
