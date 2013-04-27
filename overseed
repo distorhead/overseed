@@ -90,7 +90,6 @@ def main():
   if args.stop:
     pp = make_pidpath(args.watch)
     pid = get_pid(pp)
-    print("kill {pid}".format(pid=pid))
     kill(pid)
     os.unlink(pp)
 
