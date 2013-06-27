@@ -23,8 +23,6 @@ class Application:
   ENV_PATH = ".overseed"
 
   def action_init(self, args):
-    print("action_init({}, {})".format(self, args))
-
     env_path = self.env_path(args)
     if os.path.exists(env_path):
       self.terminate_app("overseed environment already exists!")
@@ -35,90 +33,44 @@ class Application:
       self.replace_config(env_path)
 
   def action_start(self, args):
-    print("action_start({}, {})".format(self, args))
+    self.get_env(args)
+    self.check_not_started(args)
 
     if args['no_daemonize']:
       self.watcher_loop(args)
     else:
-      pid = self.overseed_pid_path(self.env_path(args))
-      daemon = daemonize.Daemonize(app="overseed", pid=pid, action=lambda: self.watcher_loop(args))
+      pid_path = self.overseed_pid_path(self.env_path(args))
+      print("Starting overseed: {}".format(pid_path))
+      daemon = daemonize.Daemonize(
+          app="overseed",
+          pid=pid_path,
+          action=lambda: self.watcher_loop(args)
+      )
       daemon.start()
 
   def action_stop(self, args):
-    print("action_stop({}, {})".format(self, args))
+    self.get_env(args)
+    env_path = self.env_path(args)
+    pid_path = self.overseed_pid_path(env_path)
+    pid = self.get_overseed_pid(env_path)
+
+    if pid:
+      self.kill(pid)
+      self.rmrf(pid_path)
+    else:
+      self.terminate_app("overseed not running!")
 
   def action_destroy(self, args):
-    print("action_destroy({}, {})".format(self, args))
-
+    self.get_env(args)
     env_path = self.env_path(args)
-    if os.path.exists(env_path):
-      self.rmrf(env_path)
+    self.rmrf(env_path)
 
 
-  def env_path(self, args):
-    return os.path.join(args["basedir"], self.ENV_PATH)
-
-  def config_path(self, env_path):
-    return os.path.join(env_path, "config", "overseed.yml")
-
-  def overseed_pid_path(self, env_path):
-    return os.path.join(env_path, "pid", "overseed.pid")
-
-  def mkdir(self, directory):
-    print("Creating '{}'".format(directory))
-    return os.makedirs(directory, exist_ok=True)
-
-  def rmrf(self, path):
-    print("Removing '{}'".format(path))
-    return shutil.rmtree(path, True)
-
-  def replace_config(self, env_path, config=None):
-    if not config:
-      config = self.CONFIG
-
-    try:
-      configpath = self.config_path(env_path)
-      f = open(configpath, 'w')
-      configdump = yaml.dump(config)
-      print("Writing config '{}'".format(configpath))
-      f.write(configdump)
-      f.close()
-    except IOError as e:
-      self.terminate_app(e)
-
-  def get_config(self, env_path):
-    configpath = self.config_path(env_path)
-
-    if not os.path.exists(configpath):
-      self.replace_config(env_path)
-
-    try:
-      f = open(configpath, 'r')
-      return yaml.load(f)
-    except (IOError, YAMLError) as e:
-      self.terminate_app(e)
-
-  def terminate_app(self, failure_msg, prefix="Failure", exit_code=1):
-    print("{}: {}".format(prefix, failure_msg), file=sys.stderr)
-    sys.exit(exit_code)
-
-
-  def call_cmd(self, cmd):
-    print("== cmd: {cmd}".format(cmd=cmd))
-    return subprocess.call(cmd, shell=True)
-
-  def inotify_waiter(self, cfg):
-    cmd = "{} -r .".format(cfg['inotifywait'])
-
-    events = cfg['events']
-    if events:
-      cmd += " -e {}".format(",".join(events))
-
-    exclude = cfg['exclude']
-    if exclude:
-      cmd += " --exclude='({})'".format("|".join(exclude))
-
-    return self.call_cmd(cmd)
+  def check_not_started(self, args):
+    env_path = self.env_path(args)
+    pid = self.get_overseed_pid(env_path)
+    if pid:
+      self.terminate_app("overseed already running with pid={}".format(pid))
 
   def event_handler(self, cfg):
     for cmd in cfg['on_event']:
@@ -136,22 +88,101 @@ class Application:
       if res == 0:
         self.event_handler(cfg)
 
-  def get_pid(pidpath):
-    try:
-      f = open(pidpath, 'r')
-      pidstr = f.read()
-    except Exception as e:
-      print("Unable to read daemon pid from '{pidpath}'".format(pidpath=pidpath), file=sys.stderr)
-      sys.exit(1)
+
+  def env_path(self, args):
+    return os.path.join(args["basedir"], self.ENV_PATH)
+
+  def config_path(self, env_path):
+    return os.path.join(env_path, "config", "overseed.yml")
+
+  def overseed_pid_path(self, env_path):
+    return os.path.join(env_path, "pid", "overseed.pid")
+
+  def mkdir(self, directory):
+    print("Creating '{}'".format(directory))
+    return os.makedirs(directory, exist_ok=True)
+
+  def rmrf(self, path):
+    print("Removing '{}'".format(path))
+    if os.path.isdir(path):
+      return shutil.rmtree(path, True)
+    else:
+      return os.unlink(path)
+
+  def replace_config(self, env_path, config=None):
+    if not config:
+      config = self.CONFIG
 
     try:
-      return int(pidstr)
-    except Exception as e:
-      print("Bad pid '{pidstr}'".format(pidstr=pidstr))
-      sys.exit(1)
+      configpath = self.config_path(env_path)
+      f = open(configpath, 'w')
+      configdump = yaml.dump(config)
+      print("Writing config '{}'".format(configpath))
+      f.write(configdump)
+      f.close()
+    except IOError as e:
+      self.terminate_app(e)
 
-  def kill(pid):
-    call_cmd("kill {pid}".format(pid=pid))
+  def get_env(self, args):
+    env_path = self.env_path(args)
+
+    if os.path.exists(env_path):
+      return env_path
+    else:
+      self.terminate_app("overseed environment not found!")
+
+  def get_config(self, env_path):
+    configpath = self.config_path(env_path)
+
+    if not os.path.exists(configpath):
+      self.replace_config(env_path)
+
+    try:
+      f = open(configpath, 'r')
+      res = yaml.load(f)
+      f.close()
+      return res
+    except (IOError, YAMLError) as e:
+      self.terminate_app(e)
+
+  def get_overseed_pid(self, env_path):
+    pid_path = self.overseed_pid_path(env_path)
+    if os.path.exists(pid_path):
+      try:
+        f = open(pid_path, 'r')
+        res = int(f.read())
+        f.close()
+        return res
+      except IOError as e:
+        self.terminate_app(e)
+      except ValueError:
+        return None
+    else:
+      return None
+
+  def terminate_app(self, failure_msg, prefix="Failure", exit_code=1):
+    print("{}: {}".format(prefix, failure_msg), file=sys.stderr)
+    sys.exit(exit_code)
+
+  def call_cmd(self, cmd):
+    print("[SHELL] {cmd}".format(cmd=cmd))
+    return subprocess.call(cmd, shell=True)
+
+  def inotify_waiter(self, cfg):
+    cmd = "{} -r .".format(cfg['inotifywait'])
+
+    events = cfg['events']
+    if events:
+      cmd += " -e {}".format(",".join(events))
+
+    exclude = cfg['exclude']
+    if exclude:
+      cmd += " --exclude='({})'".format("|".join(exclude))
+
+    return self.call_cmd(cmd)
+
+  def kill(self, pid):
+    self.call_cmd("kill {pid}".format(pid=pid))
 
 
 def main():
@@ -179,30 +210,12 @@ def main():
 
   args = parser.parse_args()
   args_dict = vars(args)
+
   if hasattr(args, 'action_callback'):
     args.action_callback(args_dict)
   else:
     parser.print_help()
     sys.exit(1)
-
-  #KILLITWITHFIRE
-
-  #args.watch = os.path.abspath(args.watch)
-
-  #if args.stop:
-    #pp = make_pidpath(args.watch)
-    #pid = get_pid(pp)
-    #kill(pid)
-    #os.unlink(pp)
-
-  #elif args.daemonize:
-    #pid = make_pidpath(args.watch)
-    #print("pid: {pid}".format(pid=pid))
-    #daemon = daemonize.Daemonize(app="overseed", pid=pid, action=lambda: watcher_loop(args.watch))
-    #daemon.start()
-
-  #else:
-    #watcher_loop(args.watch)
 
 
 if __name__ == '__main__':
