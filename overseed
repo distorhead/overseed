@@ -8,12 +8,33 @@ import os
 import sys
 
 
+class Application:
+  def __init__(self):
+    pass
+
+  def action_main(self, args):
+    print("action_main({}, {})".format(self, args))
+
+  def action_init(self, args):
+    print("action_init({}, {})".format(self, args))
+
+  def action_start(self, args):
+    print("action_start({}, {})".format(self, args))
+
+  def action_stop(self, args):
+    print("action_stop({}, {})".format(self, args))
+
+  def action_destroy(self, args):
+    print("action_destroy({}, {})".format(self, args))
+
+
 CONFIG = {
   'events': ['modify', 'move', 'create', 'delete'],
   'exclude': ['\.git', '.*\.swp', '.*\.swx', '.*\.swo'],
   'on_event': [
-    "/usr/bin/ctags-exuberant -R"
-  ]
+    "/usr/bin/ctags -R -f .tags"
+  ],
+  'inotifywait': "/usr/bin/inotifywait"
 }
 
 
@@ -23,7 +44,7 @@ def call_cmd(cmd):
 
 
 def inotify_waiter(cfg):
-  cmd = "inotifywait -r ."
+  cmd = "{} -r .".format(cfg['inotifywait'])
 
   events = cfg['events']
   if events:
@@ -76,31 +97,50 @@ def kill(pid):
 
 
 def main():
-  parser = argparse.ArgumentParser(description="Super watcher")
-  parser.add_argument('-d', '--daemonize', action='store_true', default=False,
-                      help="daemonize watcher")
-  parser.add_argument('-s', '--stop', action='store_true', default=False,
-                      help="stop currently running watcher")
-  parser.add_argument('-w', '--watch', type=str, default=os.getcwd(),
-                      help="directory to watch")
+  app = Application()
+
+  parser = argparse.ArgumentParser(description='Super inotify watcher script')
+  parser.add_argument('base_directory', metavar='BASE_DIRECTORY',
+                      help='Base working directory')
+
+  subparsers = parser.add_subparsers(title='actions', description='Valid actions:')
+
+  sparser = subparsers.add_parser('init', help='Initialize overseed environment')
+  sparser.set_defaults(action_callback=app.action_init)
+
+  sparser = subparsers.add_parser('start', help='Start overseed')
+  sparser.add_argument('-r', '--no-daemonize', action='store_true', default=False,
+                      help='Do not daeminze overseed')
+  sparser.set_defaults(action_callback=app.action_start)
+
+  sparser = subparsers.add_parser('stop', help='Stop overseed')
+  sparser.set_defaults(action_callback=app.action_stop)
+
+  sparser = subparsers.add_parser('destroy', help='Destroy overseed environment')
+  sparser.set_defaults(action_callback=app.action_destroy)
+
   args = parser.parse_args()
+  args_dict = vars(args)
+  args.action_callback(args_dict)
 
-  args.watch = os.path.abspath(args.watch)
+  #KILLITWITHFIRE
 
-  if args.stop:
-    pp = make_pidpath(args.watch)
-    pid = get_pid(pp)
-    kill(pid)
-    os.unlink(pp)
+  #args.watch = os.path.abspath(args.watch)
 
-  elif args.daemonize:
-    pid = make_pidpath(args.watch)
-    print("pid: {pid}".format(pid=pid))
-    daemon = daemonize.Daemonize(app="overseed", pid=pid, action=lambda: watcher_loop(args.watch))
-    daemon.start()
+  #if args.stop:
+    #pp = make_pidpath(args.watch)
+    #pid = get_pid(pp)
+    #kill(pid)
+    #os.unlink(pp)
 
-  else:
-    watcher_loop(args.watch)
+  #elif args.daemonize:
+    #pid = make_pidpath(args.watch)
+    #print("pid: {pid}".format(pid=pid))
+    #daemon = daemonize.Daemonize(app="overseed", pid=pid, action=lambda: watcher_loop(args.watch))
+    #daemon.start()
+
+  #else:
+    #watcher_loop(args.watch)
 
 
 if __name__ == '__main__':
