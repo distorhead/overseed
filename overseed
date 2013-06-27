@@ -6,17 +6,33 @@ import hashlib
 import daemonize
 import os
 import sys
+import yaml
+import shutil
 
 
 class Application:
-  def __init__(self):
-    pass
+  CONFIG = {
+    'events': ['modify', 'move', 'create', 'delete'],
+    'exclude': ['\.git', '.*\.swp', '.*\.swx', '.*\.swo'],
+    'on_event': [
+      "/usr/bin/ctags -R -f .tags"
+    ],
+    'inotifywait': "/usr/bin/inotifywait"
+  }
 
-  def action_main(self, args):
-    print("action_main({}, {})".format(self, args))
+  ENV_PATH = ".overseed"
 
   def action_init(self, args):
     print("action_init({}, {})".format(self, args))
+
+    env_path = self.env_path(args)
+    if os.path.exists(env_path):
+      self.terminate_app("overseed environment already exists!")
+    else:
+      self.mkdir(env_path)
+      self.mkdir(os.path.join(env_path, "config"))
+      self.mkdir(os.path.join(env_path, "pid"))
+      self.replace_config(env_path, self.CONFIG)
 
   def action_start(self, args):
     print("action_start({}, {})".format(self, args))
@@ -27,81 +43,95 @@ class Application:
   def action_destroy(self, args):
     print("action_destroy({}, {})".format(self, args))
 
-
-CONFIG = {
-  'events': ['modify', 'move', 'create', 'delete'],
-  'exclude': ['\.git', '.*\.swp', '.*\.swx', '.*\.swo'],
-  'on_event': [
-    "/usr/bin/ctags -R -f .tags"
-  ],
-  'inotifywait': "/usr/bin/inotifywait"
-}
+    env_path = self.env_path(args)
+    if os.path.exists(env_path):
+      self.rmrf(env_path)
 
 
-def call_cmd(cmd):
-  print("== cmd: {cmd}".format(cmd=cmd))
-  return subprocess.call(cmd, shell=True)
+  def env_path(self, args):
+    return os.path.join(args["basedir"], self.ENV_PATH)
+
+  def mkdir(self, directory):
+    print("Creating '{}'".format(directory))
+    return os.makedirs(directory, exist_ok=True)
+
+  def rmrf(self, path):
+    print("Removing '{}'".format(path))
+    return shutil.rmtree(path, True)
+
+  def replace_config(self, env_path, config):
+    try:
+      configpath = os.path.join(env_path, "config", "overseed.yml")
+      f = open(configpath, 'w')
+      cfg_dump = yaml.dump(config)
+      f.write(cfg_dump)
+      f.close()
+    except IOError as e:
+      self.terminate_app(e)
+
+  def terminate_app(self, failure_msg, prefix="Failure", exit_code=1):
+    print("{}: {}".format(prefix, failure_msg), file=sys.stderr)
+    sys.exit(exit_code)
 
 
-def inotify_waiter(cfg):
-  cmd = "{} -r .".format(cfg['inotifywait'])
+  def call_cmd(cmd):
+    print("== cmd: {cmd}".format(cmd=cmd))
+    return subprocess.call(cmd, shell=True)
 
-  events = cfg['events']
-  if events:
-    cmd += " -e {}".format(",".join(events))
+  def inotify_waiter(cfg):
+    cmd = "{} -r .".format(cfg['inotifywait'])
 
-  exclude = cfg['exclude']
-  if exclude:
-    cmd += " --exclude='({})'".format("|".join(exclude))
+    events = cfg['events']
+    if events:
+      cmd += " -e {}".format(",".join(events))
 
-  return call_cmd(cmd)
+    exclude = cfg['exclude']
+    if exclude:
+      cmd += " --exclude='({})'".format("|".join(exclude))
 
+    return call_cmd(cmd)
 
-def event_handler(cfg):
-  for cmd in cfg['on_event']:
-    call_cmd(cmd)
+  def event_handler(cfg):
+    for cmd in cfg['on_event']:
+      call_cmd(cmd)
 
+  def watcher_loop(target):
+    os.chdir(target)
+    event_handler(CONFIG)
+    while True:
+      res = inotify_waiter(CONFIG)
+      if res == 0:
+        event_handler(CONFIG)
 
-def watcher_loop(target):
-  os.chdir(target)
-  event_handler(CONFIG)
-  while True:
-    res = inotify_waiter(CONFIG)
-    if res == 0:
-      event_handler(CONFIG)
+  def make_pidpath(target):
+    cwd = target.encode('utf-8')
+    pid = "/run/overseed/{}.pid".format(hashlib.md5(cwd).hexdigest())
+    return pid
 
+  def get_pid(pidpath):
+    try:
+      f = open(pidpath, 'r')
+      pidstr = f.read()
+    except Exception as e:
+      print("Unable to read daemon pid from '{pidpath}'".format(pidpath=pidpath), file=sys.stderr)
+      sys.exit(1)
 
-def make_pidpath(target):
-  cwd = target.encode('utf-8')
-  pid = "/run/overseed/{}.pid".format(hashlib.md5(cwd).hexdigest())
-  return pid
+    try:
+      return int(pidstr)
+    except Exception as e:
+      print("Bad pid '{pidstr}'".format(pidstr=pidstr))
+      sys.exit(1)
 
-
-def get_pid(pidpath):
-  try:
-    f = open(pidpath, 'r')
-    pidstr = f.read()
-  except Exception as e:
-    print("Unable to read daemon pid from '{pidpath}'".format(pidpath=pidpath), file=sys.stderr)
-    sys.exit(1)
-
-  try:
-    return int(pidstr)
-  except Exception as e:
-    print("Bad pid '{pidstr}'".format(pidstr=pidstr))
-    sys.exit(1)
-
-
-def kill(pid):
-  call_cmd("kill {pid}".format(pid=pid))
+  def kill(pid):
+    call_cmd("kill {pid}".format(pid=pid))
 
 
 def main():
   app = Application()
 
   parser = argparse.ArgumentParser(description='Super inotify watcher script')
-  parser.add_argument('base_directory', metavar='BASE_DIRECTORY',
-                      help='Base working directory')
+  parser.add_argument('-b', '--basedir', metavar='BASEDIR', default=os.getcwd(),
+                      help='Base working directory, current by default')
 
   subparsers = parser.add_subparsers(title='actions', description='Valid actions:')
 
@@ -121,7 +151,11 @@ def main():
 
   args = parser.parse_args()
   args_dict = vars(args)
-  args.action_callback(args_dict)
+  if hasattr(args, 'action_callback'):
+    args.action_callback(args_dict)
+  else:
+    parser.print_help()
+    sys.exit(1)
 
   #KILLITWITHFIRE
 
