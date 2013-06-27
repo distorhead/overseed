@@ -13,7 +13,7 @@ import shutil
 class Application:
   CONFIG = {
     'events': ['modify', 'move', 'create', 'delete'],
-    'exclude': ['\.git', '.*\.swp', '.*\.swx', '.*\.swo'],
+    'exclude': ['\.git', '.*\.swp', '.*\.swx', '.*\.swo', '\.overseed/.*'],
     'on_event': [
       "/usr/bin/ctags -R -f .tags"
     ],
@@ -32,10 +32,17 @@ class Application:
       self.mkdir(env_path)
       self.mkdir(os.path.join(env_path, "config"))
       self.mkdir(os.path.join(env_path, "pid"))
-      self.replace_config(env_path, self.CONFIG)
+      self.replace_config(env_path)
 
   def action_start(self, args):
     print("action_start({}, {})".format(self, args))
+
+    if args['no_daemonize']:
+      self.watcher_loop(args)
+    else:
+      pid = self.overseed_pid_path(self.env_path(args))
+      daemon = daemonize.Daemonize(app="overseed", pid=pid, action=lambda: self.watcher_loop(args))
+      daemon.start()
 
   def action_stop(self, args):
     print("action_stop({}, {})".format(self, args))
@@ -51,6 +58,12 @@ class Application:
   def env_path(self, args):
     return os.path.join(args["basedir"], self.ENV_PATH)
 
+  def config_path(self, env_path):
+    return os.path.join(env_path, "config", "overseed.yml")
+
+  def overseed_pid_path(self, env_path):
+    return os.path.join(env_path, "pid", "overseed.pid")
+
   def mkdir(self, directory):
     print("Creating '{}'".format(directory))
     return os.makedirs(directory, exist_ok=True)
@@ -59,14 +72,30 @@ class Application:
     print("Removing '{}'".format(path))
     return shutil.rmtree(path, True)
 
-  def replace_config(self, env_path, config):
+  def replace_config(self, env_path, config=None):
+    if not config:
+      config = self.CONFIG
+
     try:
-      configpath = os.path.join(env_path, "config", "overseed.yml")
+      configpath = self.config_path(env_path)
       f = open(configpath, 'w')
-      cfg_dump = yaml.dump(config)
-      f.write(cfg_dump)
+      configdump = yaml.dump(config)
+      print("Writing config '{}'".format(configpath))
+      f.write(configdump)
       f.close()
     except IOError as e:
+      self.terminate_app(e)
+
+  def get_config(self, env_path):
+    configpath = self.config_path(env_path)
+
+    if not os.path.exists(configpath):
+      self.replace_config(env_path)
+
+    try:
+      f = open(configpath, 'r')
+      return yaml.load(f)
+    except (IOError, YAMLError) as e:
       self.terminate_app(e)
 
   def terminate_app(self, failure_msg, prefix="Failure", exit_code=1):
@@ -74,11 +103,11 @@ class Application:
     sys.exit(exit_code)
 
 
-  def call_cmd(cmd):
+  def call_cmd(self, cmd):
     print("== cmd: {cmd}".format(cmd=cmd))
     return subprocess.call(cmd, shell=True)
 
-  def inotify_waiter(cfg):
+  def inotify_waiter(self, cfg):
     cmd = "{} -r .".format(cfg['inotifywait'])
 
     events = cfg['events']
@@ -89,24 +118,23 @@ class Application:
     if exclude:
       cmd += " --exclude='({})'".format("|".join(exclude))
 
-    return call_cmd(cmd)
+    return self.call_cmd(cmd)
 
-  def event_handler(cfg):
+  def event_handler(self, cfg):
     for cmd in cfg['on_event']:
-      call_cmd(cmd)
+      self.call_cmd(cmd)
 
-  def watcher_loop(target):
+  def watcher_loop(self, args):
+    target = args['basedir']
+    env_path = self.env_path(args)
+    cfg = self.get_config(env_path)
+
     os.chdir(target)
-    event_handler(CONFIG)
+    self.event_handler(cfg)
     while True:
-      res = inotify_waiter(CONFIG)
+      res = self.inotify_waiter(cfg)
       if res == 0:
-        event_handler(CONFIG)
-
-  def make_pidpath(target):
-    cwd = target.encode('utf-8')
-    pid = "/run/overseed/{}.pid".format(hashlib.md5(cwd).hexdigest())
-    return pid
+        self.event_handler(cfg)
 
   def get_pid(pidpath):
     try:
